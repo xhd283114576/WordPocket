@@ -1,6 +1,11 @@
 import { env } from "cloudflare:workers";
 
 const requests = new Map<string, { count: number; resetAt: number }>();
+const PROVIDERS = {
+  openai: "https://api.openai.com/v1",
+  deepseek: "https://api.deepseek.com",
+  qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+} as const;
 function isRateLimited(ip: string) {
   const now = Date.now();
   const current = requests.get(ip);
@@ -12,17 +17,21 @@ function isRateLimited(ip: string) {
 export async function POST(request: Request) {
   const ip = request.headers.get("cf-connecting-ip") || "local";
   if (isRateLimited(ip)) return Response.json({ error: "请求太频繁，请一分钟后再试。" }, { status: 429 });
-  let body: { word?: unknown; meaning?: unknown; level?: unknown };
+  let body: { word?: unknown; meaning?: unknown; level?: unknown; provider?: unknown; model?: unknown; apiKey?: unknown };
   try { body = await request.json(); } catch { return Response.json({ error: "请求格式不正确。" }, { status: 400 }); }
   const word = typeof body.word === "string" ? body.word.trim().slice(0, 80) : "";
   const meaning = typeof body.meaning === "string" ? body.meaning.trim().slice(0, 160) : "";
   const level = ["beginner", "intermediate", "advanced"].includes(String(body.level)) ? String(body.level) : "intermediate";
   if (!word || !/^[a-zA-Z][a-zA-Z\s'-]*$/.test(word)) return Response.json({ error: "请输入有效的英文单词或短语。" }, { status: 400 });
 
-  const apiKey = env.AI_API_KEY;
-  const baseUrl = (env.AI_BASE_URL || "https://api.deepseek.com").replace(/\/$/, "");
-  const model = env.AI_MODEL || "deepseek-v4-flash";
-  if (!apiKey) return Response.json({ error: "AI 服务正在配置中，请稍后再试。" }, { status: 503 });
+  const personalKey = typeof body.apiKey === "string" ? body.apiKey.trim().slice(0, 500) : "";
+  const provider = typeof body.provider === "string" && body.provider in PROVIDERS ? body.provider as keyof typeof PROVIDERS : "deepseek";
+  const requestedModel = typeof body.model === "string" ? body.model.trim().slice(0, 100) : "";
+  if (requestedModel && !/^[A-Za-z0-9._:/-]+$/.test(requestedModel)) return Response.json({ error: "模型名称格式不正确。" }, { status: 400 });
+  const apiKey = personalKey || env.AI_API_KEY;
+  const baseUrl = personalKey ? PROVIDERS[provider] : (env.AI_BASE_URL || PROVIDERS.deepseek).replace(/\/$/, "");
+  const model = personalKey ? requestedModel : (env.AI_MODEL || "deepseek-v4-flash");
+  if (!apiKey || !model) return Response.json({ error: "请先在右上角的“AI 设置”中配置 API。" }, { status: 503 });
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20_000);

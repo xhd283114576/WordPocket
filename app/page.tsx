@@ -1,11 +1,17 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { BookOpen, Download, Search, Sparkles, Upload, Volume2, X } from "lucide-react";
+import { BookOpen, Check, Download, Eye, EyeOff, Search, Settings, Sparkles, Upload, Volume2, X } from "lucide-react";
 
 type WordStatus = "learning" | "mastered";
 type WordItem = { id: string; word: string; meaning: string; example: string; tags: string[]; status: WordStatus; createdAt: number };
 const STORAGE_KEY = "wordpocket.words.v1";
+type Provider = "openai" | "deepseek" | "qwen";
+const PROVIDERS: Record<Provider, { label: string; model: string; hint: string }> = {
+  openai: { label: "OpenAI", model: "gpt-5-mini", hint: "在 OpenAI Platform 创建的 API Key" },
+  deepseek: { label: "DeepSeek", model: "deepseek-v4-flash", hint: "在 DeepSeek 开放平台创建的 API Key" },
+  qwen: { label: "通义千问", model: "qwen-plus", hint: "在阿里云百炼创建的 API Key" },
+};
 
 export default function Home() {
   const [words, setWords] = useState<WordItem[]>([]);
@@ -20,11 +26,23 @@ export default function Home() {
   const [generating, setGenerating] = useState(false);
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [answerShown, setAnswerShown] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [provider, setProvider] = useState<Provider>("deepseek");
+  const [model, setModel] = useState(PROVIDERS.deepseek.model);
+  const [apiKey, setApiKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [connectionState, setConnectionState] = useState<"idle" | "success" | "error">("idle");
 
   useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
       if (Array.isArray(saved)) setWords(saved);
+      const savedProvider = localStorage.getItem("wordpocket.ai.provider") as Provider | null;
+      const activeProvider = savedProvider && PROVIDERS[savedProvider] ? savedProvider : "deepseek";
+      setProvider(activeProvider);
+      setModel(localStorage.getItem("wordpocket.ai.model") || PROVIDERS[activeProvider].model);
+      setApiKey(sessionStorage.getItem("wordpocket.ai.key") || "");
     } catch {}
     setReady(true);
   }, []);
@@ -49,7 +67,7 @@ export default function Home() {
     if (!word.trim()) { announce("请先输入英文单词。"); return; }
     setGenerating(true); setMessage("AI 正在构思自然的学习语境…");
     try {
-      const response = await fetch("/api/generate-example", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ word: word.trim(), meaning: meaning.trim(), level: "intermediate" }) });
+      const response = await fetch("/api/generate-example", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ word: word.trim(), meaning: meaning.trim(), level: "intermediate", provider, model, apiKey }) });
       const data = await response.json() as { sentence?: string; translation?: string; note?: string; error?: string };
       if (!response.ok || !data.sentence) throw new Error(data.error || "生成失败，请稍后再试。");
       setExample(`${data.sentence}\n${data.translation ? `中文：${data.translation}` : ""}${data.note ? `\n提示：${data.note}` : ""}`.trim());
@@ -62,9 +80,26 @@ export default function Home() {
   function openReview() { if (!words.length) { announce("先记录一个单词，再来复习吧。"); return; } const candidates = words.length > 1 ? words.filter((item) => item.id !== reviewId) : words; setReviewId(candidates[Math.floor(Math.random() * candidates.length)].id); setAnswerShown(false); }
   function exportWords() { const blob = new Blob([JSON.stringify({ app: "WordPocket", version: 1, exportedAt: new Date().toISOString(), words }, null, 2)], { type: "application/json" }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `wordpocket-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(link.href); }
   async function importWords(event: React.ChangeEvent<HTMLInputElement>) { const file = event.target.files?.[0]; if (!file) return; try { const data = JSON.parse(await file.text()); const imported = Array.isArray(data) ? data : data.words; if (!Array.isArray(imported)) throw new Error(); setWords(imported.filter((item) => item?.word && item?.meaning)); announce(`成功导入 ${imported.length} 个单词。`); } catch { announce("导入失败，请选择 WordPocket 导出的 JSON 文件。"); } event.target.value = ""; }
+  function saveSettings() {
+    localStorage.setItem("wordpocket.ai.provider", provider);
+    localStorage.setItem("wordpocket.ai.model", model.trim());
+    if (apiKey.trim()) sessionStorage.setItem("wordpocket.ai.key", apiKey.trim());
+    else sessionStorage.removeItem("wordpocket.ai.key");
+    setSettingsOpen(false);
+    announce("AI 设置已保存到当前浏览器会话。");
+  }
+  async function testConnection() {
+    if (!apiKey.trim() || !model.trim()) { setConnectionState("error"); return; }
+    setTesting(true); setConnectionState("idle");
+    try {
+      const response = await fetch("/api/generate-example", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ word: "practice", meaning: "练习", level: "beginner", provider, model: model.trim(), apiKey: apiKey.trim() }) });
+      setConnectionState(response.ok ? "success" : "error");
+    } catch { setConnectionState("error"); }
+    finally { setTesting(false); }
+  }
 
   return <>
-    <header className="topbar"><a className="brand" href="#top" aria-label="WordPocket 首页"><span className="brand-mark">W</span><span>WordPocket</span></a><div className="top-actions"><button className="button ghost" type="button" onClick={exportWords}><Download size={16}/>导出</button><label className="button ghost"><Upload size={16}/>导入<input type="file" accept="application/json" hidden onChange={importWords}/></label></div></header>
+    <header className="topbar"><a className="brand" href="#top" aria-label="WordPocket 首页"><span className="brand-mark">W</span><span>WordPocket</span></a><div className="top-actions"><button className={`button ghost config-button ${apiKey ? "configured" : ""}`} type="button" onClick={() => { setConnectionState("idle"); setSettingsOpen(true); }}><Settings size={16}/><span>AI 设置</span>{apiKey && <i aria-label="已配置"/>}</button><button className="button ghost" type="button" onClick={exportWords}><Download size={16}/>导出</button><label className="button ghost"><Upload size={16}/>导入<input type="file" accept="application/json" hidden onChange={importWords}/></label></div></header>
     <main id="top" className="shell">
       <section className="intro"><div><p className="eyebrow">YOUR PERSONAL WORD BANK</p><h1>遇见好词，马上收进口袋。</h1><p>记录单词、理解语境，用 AI 生成真正记得住的例句。</p></div><div className="stats" aria-label="词库统计"><div><strong>{words.length}</strong><span>全部</span></div><div><strong>{words.filter((item) => item.status === "learning").length}</strong><span>学习中</span></div><div><strong>{words.filter((item) => item.status === "mastered").length}</strong><span>已掌握</span></div></div></section>
       <section className="workspace">
@@ -81,5 +116,6 @@ export default function Home() {
       </section>
     </main>
     {reviewWord && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="随机复习"><section className="review-card"><button className="close-button" onClick={() => setReviewId(null)} aria-label="关闭"><X/></button><p className="section-kicker">QUICK REVIEW</p><button className="review-speak" onClick={() => speak(reviewWord.word)} aria-label="朗读"><Volume2/></button><h2>{reviewWord.word}</h2>{!answerShown ? <button className="button primary wide" onClick={() => setAnswerShown(true)}>显示答案</button> : <div className="review-answer"><strong>{reviewWord.meaning}</strong>{reviewWord.example && <p>{reviewWord.example}</p>}</div>}<div className="review-actions"><button className="button dark" onClick={openReview}>换一个</button><button className="button ghost" onClick={() => toggleStatus(reviewWord.id)}>{reviewWord.status === "mastered" ? "设为学习中" : "标为已掌握"}</button></div></section></div>}
+    {settingsOpen && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="settings-title"><section className="settings-card"><button className="close-button" type="button" onClick={() => setSettingsOpen(false)} aria-label="关闭"><X/></button><div className="settings-heading"><span className="settings-icon"><Settings/></span><div><p className="section-kicker">AI CONNECTION</p><h2 id="settings-title">配置 AI 服务</h2></div></div><p className="settings-intro">密钥只保存在当前浏览器会话中，关闭标签页后自动清除，不会进入词库导出或 GitHub。</p><div className="field-grid settings-fields"><label className="field"><span>服务商</span><select value={provider} onChange={(event) => { const next = event.target.value as Provider; setProvider(next); setModel(PROVIDERS[next].model); setConnectionState("idle"); }}>{Object.entries(PROVIDERS).map(([value, item]) => <option value={value} key={value}>{item.label}</option>)}</select></label><label className="field"><span>模型名称</span><input value={model} onChange={(event) => { setModel(event.target.value); setConnectionState("idle"); }} maxLength={100} placeholder={PROVIDERS[provider].model}/></label><label className="field"><span>API Key</span><span className="secret-input"><input type={showKey ? "text" : "password"} value={apiKey} onChange={(event) => { setApiKey(event.target.value); setConnectionState("idle"); }} autoComplete="off" spellCheck={false} placeholder={PROVIDERS[provider].hint}/><button type="button" onClick={() => setShowKey((value) => !value)} aria-label={showKey ? "隐藏密钥" : "显示密钥"}>{showKey ? <EyeOff/> : <Eye/>}</button></span></label></div><div className={`connection-result ${connectionState}`} aria-live="polite">{connectionState === "success" && <><Check size={16}/>连接成功，可以生成例句</>}{connectionState === "error" && <>连接失败，请检查密钥和模型名称</>}</div><div className="settings-actions"><button className="button ghost" type="button" onClick={testConnection} disabled={testing}>{testing ? "测试中…" : "测试连接"}</button><button className="button primary" type="button" onClick={saveSettings}>保存设置</button></div></section></div>}
   </>;
 }
